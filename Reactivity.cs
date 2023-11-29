@@ -3,12 +3,18 @@ namespace GarnetDG.Reactivity;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
+// Based on https://vuejs.org/guide/extras/reactivity-in-depth.html
+
 public interface IReactive { }
 
 public class ReactivityContext
 {
+    /// <summary>
+    /// Tracks the subscriptions for each property of each object
+    /// </summary>
     private readonly ConditionalWeakTable<object, Dictionary<string, HashSet<Action>>> subscriptions = [];
 
+#if DEBUG
     private readonly ConditionalWeakTable<object, string> _objectIds = [];
     private string _getObjectId(object obj)
     {
@@ -20,6 +26,7 @@ public class ReactivityContext
         }
         return objectId;
     }
+#endif
 
     private Action? activeEffect = null;
 
@@ -27,26 +34,45 @@ public class ReactivityContext
 
     public void Track(object target, string key)
     {
+#if DEBUG
         Console.WriteLine($"Track \"{_getObjectId(target)}\" \"{key}\"");
+#endif
 
         if (activeEffect != null)
         {
-            var effects = getSubscribersForProperty(target, key);
+            var effects = GetSubscribersForProperty(target, key);
             effects.Add(activeEffect);
         }
     }
 
     public void Trigger(object target, string key)
     {
+#if DEBUG
         Console.WriteLine($"Trigger \"{_getObjectId(target)}\" \"{key}\"");
+#endif
 
-        var effects = getSubscribersForProperty(target, key);
+        var effects = GetSubscribersForProperty(target, key);
         foreach (var effect in effects)
         {
             effect();
         }
     }
 
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="obj"></param>
+    /// <returns></returns>
+    public T Reactive<T>(T obj) where T : class, IReactive
+    {
+        return ReactiveProxy<T>.Create(obj, this);
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="effect"></param>
     public void WatchEffect(Action effect)
     {
         activeEffect = effect;
@@ -54,7 +80,12 @@ public class ReactivityContext
         activeEffect = null;
     }
 
-    private HashSet<Action> getSubscribersForProperty(object target, string key)
+    public IRef<T> Ref<T>(T target)
+    {
+        return Reactive<IRef<T>>(new Ref<T> { Value = target });
+    }
+
+    private HashSet<Action> GetSubscribersForProperty(object target, string key)
     {
         var objectKeys = subscriptions.TryGetValue(target, out var _objectKeys) ? _objectKeys : null;
         if (objectKeys == null)
@@ -72,14 +103,22 @@ public class ReactivityContext
 
         return keyEffects;
     }
-
-    public T Reactive<T>(T obj) where T : class, IReactive
-    {
-        return ReactiveProxy<T>.Create(obj, this);
-    }
 }
 
-public class ReactiveProxy<T> : DispatchProxy where T : class
+public class Ref<T> : IRef<T>
+{
+    public T Value { get; set; } = default!;
+}
+public interface IRef<T> : IReactive
+{
+    public T Value { get; set; }
+}
+
+/// <summary>
+/// Proxy that intercepts gets and sets
+/// </summary>
+/// <typeparam name="T"></typeparam>
+internal class ReactiveProxy<T> : DispatchProxy where T : class
 {
     private T target = default!;
     private ReactivityContext context = default!;
@@ -88,6 +127,12 @@ public class ReactiveProxy<T> : DispatchProxy where T : class
     {
     }
 
+    /// <summary>
+    /// Creates a new ReactiveProxy
+    /// </summary>
+    /// <param name="target"></param>
+    /// <param name="context"></param>
+    /// <returns></returns>
     public static T Create(T target, ReactivityContext context)
     {
         var proxy = Create<T, ReactiveProxy<T>>() as ReactiveProxy<T>;
@@ -99,9 +144,13 @@ public class ReactiveProxy<T> : DispatchProxy where T : class
 
             // recurse into properties
             var properties = target?.GetType().GetProperties() ?? [];
-            foreach (var property in properties) {
-                if (typeof(IReactive).IsAssignableFrom(property.PropertyType) && property.PropertyType.IsInterface) {
-                    if (property.CanRead && property.CanWrite) {
+            foreach (var property in properties)
+            {
+                // only make reactive if it implements IReactive
+                if (typeof(IReactive).IsAssignableFrom(property.PropertyType) && property.PropertyType.IsInterface)
+                {
+                    if (property.CanRead && property.CanWrite)
+                    {
                         var originalValue = property.GetValue(target);
                         var createMethod = typeof(ReactivityContext).GetMethod("Reactive");
                         var reactiveValue = createMethod!.MakeGenericMethod([property.PropertyType]).Invoke(context, [originalValue]);
@@ -118,6 +167,12 @@ public class ReactiveProxy<T> : DispatchProxy where T : class
         }
     }
 
+    /// <summary>
+    /// Called when a method on the reactive proxy is invoked
+    /// </summary>
+    /// <param name="targetMethod"></param>
+    /// <param name="args"></param>
+    /// <returns></returns>
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
     {
         ArgumentNullException.ThrowIfNull(targetMethod);
@@ -141,13 +196,16 @@ public class ReactiveProxy<T> : DispatchProxy where T : class
 
         if (isGetter && propertyName is not null)
         {
+            // if the value is read, track a dependency
             context.Track(target, propertyName);
         }
 
+        // run method
         var result = targetMethod.Invoke(target, args);
 
         if (isSetter && propertyName is not null)
         {
+            // if the value is set, cause a trigger
             context.Trigger(target, propertyName);
         }
 

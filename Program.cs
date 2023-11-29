@@ -18,6 +18,15 @@ ctx.WatchEffect(() =>
 });
 test2.Test.TestString = "foo";
 
+Console.WriteLine("=======");
+
+var test3 = ctx.Ref("asdf");
+ctx.WatchEffect(() =>
+{
+    Console.WriteLine(test3.Value);
+});
+test3.Value = "fdsa";
+
 
 public interface IReactiveTest1 : IReactive
 {
