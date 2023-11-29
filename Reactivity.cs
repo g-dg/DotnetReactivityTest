@@ -97,6 +97,19 @@ public class ReactiveProxy<T> : DispatchProxy where T : class
             proxy.target = target ?? Activator.CreateInstance<T>();
             proxy.context = context;
 
+            // recurse into properties
+            var properties = target?.GetType().GetProperties() ?? [];
+            foreach (var property in properties) {
+                if (typeof(IReactive).IsAssignableFrom(property.PropertyType) && property.PropertyType.IsInterface) {
+                    if (property.CanRead && property.CanWrite) {
+                        var originalValue = property.GetValue(target);
+                        var createMethod = typeof(ReactivityContext).GetMethod("Reactive");
+                        var reactiveValue = createMethod!.MakeGenericMethod([property.PropertyType]).Invoke(context, [originalValue]);
+                        property.SetValue(target, reactiveValue);
+                    }
+                }
+            }
+
             return (proxy as T)!;
         }
         else
